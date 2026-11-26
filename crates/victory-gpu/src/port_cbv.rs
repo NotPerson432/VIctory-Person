@@ -43,7 +43,32 @@ pub(crate) fn on() -> bool {
 /// `VICTORY_AB=<s>,VICTORY_PORT_CBV_PLACE` (diagnostics builds) on and off
 /// while the title runs: both sides measured in one run.
 pub(crate) fn in_place_on() -> bool {
-    on() && crate::toggled!("VICTORY_PORT_CBV_PLACE")
+    tables_on() && crate::toggled!("VICTORY_PORT_CBV_PLACE")
+}
+
+/// Whether tables' constant buffers are read through raw twins: the port
+/// is on and the host's view heaps have twins
+/// (`victory_shader::emit::raw_views`). A host whose view heaps cannot take
+/// the twins (NVIDIA, whose shader-visible heaps stop at 1,000,000 views)
+/// gets shaders that read tables' constant buffers as constant buffers
+/// still, so their slots must hold constant buffer views on 256 bytes or
+/// copies, as with the port off; only root constant buffers (root SRVs,
+/// which need no twin) follow the port there.
+pub(crate) fn tables_on() -> bool {
+    if !on() {
+        return false;
+    }
+    if victory_shader::emit::raw_views() != 0 {
+        return true;
+    }
+    static TOLD: std::sync::Once = std::sync::Once::new();
+    TOLD.call_once(|| {
+        tracing::info!(
+            "renderer port 5 (VICTORY_PORT_CBV=1): this host's view heaps have no raw twins (NVIDIA caps them at \
+             1,000,000 views); tables' constant buffers are copied as before, root ones are read in place"
+        );
+    });
+    false
 }
 
 /// Since the last line: tables' constant buffers given in place, their bytes;
