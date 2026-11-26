@@ -89,24 +89,21 @@ something is wrong. `-RayTracing` turns the title's ray-traced indirect light on
 
 ### Frame rate
 
-The launcher leaves the renderer patches and the frame rate as they are unless
-asked. For the most frames, with what the table above measured:
+`scripts\play.ps1 -Exe <path>` now starts with no frame rate limit, the five
+renderer patches on (about 45 ms a frame against 57-75 without them), and the
+pipelines earlier runs drew with made before the title starts, so they do not
+stutter on first use. `-Safe` leaves the patches out.
 
 ```powershell
-scripts\play.ps1 -Exe <path> -Fast -Warm            # patches 1, 2, 5, 6, 7 and the Series S profile
-scripts\play.ps1 -Exe <path> -Fast -Fps 60 -Tearing # and above 30 where the PC can, on a VRR display
-scripts\play.ps1 -Exe <path> -Fast -Fps 20          # even frames: a limit just below what the PC reaches
+scripts\play.ps1 -Exe <path> -SeriesS          # about 5 ms a frame less, a softer picture
+scripts\play.ps1 -Exe <path> -Fps 30           # the title's own limit again
+scripts\play.ps1 -Exe <path> -Fps 20           # even frames: a limit just below what the PC reaches
+scripts\play.ps1 -Exe <path> -Tearing          # on a G-SYNC or FreeSync display
+scripts\play.ps1 -Exe <path> -NoWarm           # start at once
 ```
 
-- `-Ports` turns on the five renderer patches, `-SeriesS` the Series S profile,
-  `-Fast` both (with `-Fsr4K`, the patches only: FSR 4K needs the Series X profile).
-- `-Fps <rate>` sets `VICTORY_FRAME_INTERVAL_MS` for it (`0`: no limit). A limit a
-  little below the frame rate the scene reaches gives frames of one length
-  instead of frames that vary; above 30 the title goes as fast as it can.
+- `-Fps <rate>` sets `VICTORY_FRAME_INTERVAL_MS` for it; the default `0` is no limit.
 - `-Tearing` sets `VICTORY_TEARING=1`.
-- `-Warm` writes down the pipelines each run creates and, before starting, makes
-  those earlier runs drew with (`victory warm --used`), so a new build or driver
-  stutters less. It goes on where it was stopped.
 - `VICTORY_TIMER_LOG=1` logs how even the frames are every 5 s.
 
 For PC FSR 4.1.2, set `[paths].fidelityfx_dir` in `victory.toml` or
