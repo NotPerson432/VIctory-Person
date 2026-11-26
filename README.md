@@ -106,6 +106,31 @@ name, PCI vendor and device IDs, and dedicated VRAM. Set
 name to select it explicitly. With the launcher, pass
 `-More @{VICTORY_D3D12_ADAPTER='NVIDIA'}`.
 
+### On an NVIDIA card
+
+The layer runs on NVIDIA cards (upstream was measured on an RTX 4070); the
+numbers above are of an AMD card only, and nothing in this fork has been
+measured on NVIDIA yet. What differs there, and what the layer does about it:
+
+- **Waves of 32.** NVIDIA refuses the console's `WaveSize(64)`; compute
+  programs are translated for waves of 32 from the lanes the card reports.
+- **View heaps of 1,000,000.** Shader-visible heaps stop there, so view
+  indices are clamped to a null slot inside it and the raw twins of views
+  are left out (the log says `raw_twins = false`).
+- **Renderer port 5 without twins.** With `VICTORY_PORT_CBV=1` and no raw
+  twins, tables' constant buffers are copied as with the port off and only
+  root constant buffers are read in place (the log says so once). Before,
+  a table's constant buffer not on 256 bytes became a null view there and
+  its shaders read zeros.
+- **No `-Fsr4K`.** AMD's FSR 4 DLL offers no FSR 4 for NVIDIA cards; leave
+  it off and the title's own upscaler is used (the error says so).
+- **Less VRAM.** At about 10.5 GB of VRAM, a 12 GB card is near its budget:
+  `--console series-s` and the texture caps that start at 92 % of the budget
+  (`VICTORY_TEXTURE_MAX`) help.
+
+On a laptop with two GPUs, check that the log's `host D3D12 adapter` line
+names the GeForce card, or pass `-More @{VICTORY_D3D12_ADAPTER='NVIDIA'}`.
+
 Before the first run, ahead of time (both can be stopped and go on later):
 
 ```powershell

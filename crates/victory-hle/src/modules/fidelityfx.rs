@@ -293,6 +293,12 @@ fn load(dir: &Path) -> Result<(Host, String), String> {
     Ok((host, version))
 }
 
+/// What to do where AMD's DLL has no FSR 4 for the card: it offers FSR 4
+/// on the Radeon cards it supports alone, so an NVIDIA or Intel card plays
+/// without `-Fsr4K` (the title's own upscaler).
+const NOT_HERE: &str = "AMD's DLL offers FSR 4 only on the Radeon cards it supports; on an NVIDIA or Intel card \
+                        leave -Fsr4K / VICTORY_FSR_4K off and the title's own upscaler is used";
+
 fn is_fsr_4_1_2(name: &str) -> bool {
     name.strip_prefix("4.1.2")
         .is_some_and(|suffix| !suffix.starts_with(|c: char| c.is_ascii_digit()))
@@ -316,7 +322,7 @@ fn select_version(query_fn: Call, device: &ID3D12Device) -> Result<(u64, String)
     let code = unsafe { query_fn(null_mut(), &mut query.header) };
     if code != OK || count == 0 {
         return Err(format!(
-            "it offers no upscaler for the host GPU (code {code})"
+            "it offers no upscaler for the host GPU (code {code}); {NOT_HERE}"
         ));
     }
     let mut names = vec![null::<c_char>(); count as usize];
@@ -344,7 +350,7 @@ fn select_version(query_fn: Call, device: &ID3D12Device) -> Result<(u64, String)
         }
     }
     Err(format!(
-        "no FSR 4.1.2 provider for this adapter (available: {})",
+        "no FSR 4.1.2 provider for this adapter (available: {}); {NOT_HERE}",
         available.join(", ")
     ))
 }
