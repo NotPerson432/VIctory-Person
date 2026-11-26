@@ -691,23 +691,81 @@ pub extern "system" fn XMemAllocatePhysicalPages(
         committed: (0..n.div_ceil(64)).map(|_| std::sync::atomic::AtomicU64::new(0)).collect(),
     });
     let mut table = page_table_mut();
-    let first = table.next_page;
-    table.next_page += n * FRAMES;
-    for index in 0..n {
+    let Pages { next_page, pages: known } = &mut *table;
+    let Some(numbers) = new_numbers(next_page, known.keys().copied(), n) else {
+        drop(table);
+        // The section goes with `section`, and the GPU side's census with it.
+        tracing::warn!(n, "XMemAllocatePhysicalPages: no page numbers left that the title can keep");
+        // SAFETY: checked non-null.
+        unsafe { count.write(0) };
+        return 0;
+    };
+    for (index, &number) in numbers.iter().enumerate() {
         let slice = Slice {
             section: section.clone(),
             index,
         };
-        table.pages.insert(first + index * FRAMES, slice);
+        table.pages.insert(number, slice);
     }
     // Title memory is touched without our locks: a fault there may wait for
     // a mapping call, which takes them.
     drop(table);
-    for index in 0..n {
+    for (index, &number) in numbers.iter().enumerate() {
         // SAFETY: the title passes room for `n` page numbers.
-        unsafe { pages.add(index).write(first + index * FRAMES) };
+        unsafe { pages.add(index).write(number) };
     }
     1
+}
+
+/// The first page number given out; 0 and those below stay unused.
+const FIRST_NUMBER: usize = 0x10_0000;
+
+/// One past the last page number the title can keep: 21 bits of
+/// `number >> 4` (see [`FRAMES`]).
+const NUMBERS_END: usize = (1 << 21) * FRAMES;
+
+/// Numbers for `n` new pages, none of them in `used`. New ones from `next`
+/// on while they fit [`NUMBERS_END`], as before. Past it (about 124 GiB of
+/// allocations over a run, freed or not), freed numbers are given out
+/// again: a run of `n` consecutive ones if there is one, else any `n`.
+/// Numbers the title truncated used to come back unknown, or to name a
+/// live page of lower number, so the wrong memory was mapped. `None` if
+/// fewer than `n` are free.
+fn new_numbers(
+    next: &mut usize,
+    used: impl Iterator<Item = usize>,
+    n: usize,
+) -> Option<Vec<usize>> {
+    let step = n.checked_mul(FRAMES)?;
+    if let Some(end) = next.checked_add(step).filter(|&end| end <= NUMBERS_END) {
+        let first = *next;
+        *next = end;
+        return Some((0..n).map(|i| first + i * FRAMES).collect());
+    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        tracing::warn!("physical page numbers: the title's 21 bits are used up, freed numbers given out again");
+    });
+    let mut used: Vec<usize> = used.filter(|u| (FIRST_NUMBER..NUMBERS_END).contains(u)).collect();
+    used.sort_unstable();
+    let mut at = FIRST_NUMBER;
+    for &u in used.iter().chain(std::iter::once(&NUMBERS_END)) {
+        if u >= at && u - at >= step {
+            return Some((0..n).map(|i| at + i * FRAMES).collect());
+        }
+        at = at.max(u + FRAMES);
+    }
+    let mut numbers = Vec::with_capacity(n);
+    let mut taken = used.iter().peekable();
+    let mut at = FIRST_NUMBER;
+    while numbers.len() < n && at < NUMBERS_END {
+        while taken.next_if(|&&u| u < at).is_some() {}
+        if taken.next_if(|&&u| u == at).is_none() {
+            numbers.push(at);
+        }
+        at += FRAMES;
+    }
+    (numbers.len() == n).then_some(numbers)
 }
 
 /// Page numbers count 4 KiB frames, so a 64 KiB page's is a multiple of
@@ -2019,6 +2077,39 @@ pub(crate) fn module() -> HleModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_numbers_are_new_until_the_titles_bits_run_out() {
+        let mut next = FIRST_NUMBER;
+        let a = new_numbers(&mut next, std::iter::empty(), 3).unwrap();
+        assert_eq!(a, [FIRST_NUMBER, FIRST_NUMBER + FRAMES, FIRST_NUMBER + 2 * FRAMES]);
+        let b = new_numbers(&mut next, a.iter().copied(), 2).unwrap();
+        assert_eq!(b[0], FIRST_NUMBER + 3 * FRAMES);
+        assert_eq!(next, FIRST_NUMBER + 5 * FRAMES);
+    }
+
+    #[test]
+    fn page_numbers_past_the_titles_bits_are_freed_ones() {
+        // Every number is taken but for a hole of 4 at `hole`, and 1 at `lone`.
+        let hole = FIRST_NUMBER + 100 * FRAMES;
+        let lone = FIRST_NUMBER + 7 * FRAMES;
+        let used: Vec<usize> = (FIRST_NUMBER..NUMBERS_END)
+            .step_by(FRAMES)
+            .filter(|&u| !(hole..hole + 4 * FRAMES).contains(&u) && u != lone)
+            .collect();
+        let mut next = NUMBERS_END - FRAMES;
+        // A run when one fits: the hole, not the lone number before it.
+        let run = new_numbers(&mut next, used.iter().copied(), 3).unwrap();
+        assert_eq!(run, [hole, hole + FRAMES, hole + 2 * FRAMES]);
+        assert_eq!(next, NUMBERS_END - FRAMES);
+        // Scattered when none does.
+        let any = new_numbers(&mut next, used.iter().copied(), 5).unwrap();
+        assert_eq!(any, [lone, hole, hole + FRAMES, hole + 2 * FRAMES, hole + 3 * FRAMES]);
+        assert!(new_numbers(&mut next, used.iter().copied(), 6).is_none());
+        for numbers in [run, any] {
+            assert!(numbers.iter().all(|&u| u % FRAMES == 0 && u >> 4 < 1 << 21));
+        }
+    }
 
     fn query(address: *const c_void) -> BasicInformation {
         // SAFETY: plain data; zero is a valid value.
