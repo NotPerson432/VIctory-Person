@@ -58,6 +58,7 @@ the frame now is the one thread that submits the title's work to the card
 | `VICTORY_FRAME_INTERVAL_MS=16.667` | Lets the title go above 30 fps (menus and videos reach 60; the game's clock stays right) |
 | `VICTORY_AMBIENT_SETTLE` | How fast light settles after walking indoors (on by default, `250,3`; `0` turns it off) |
 | `VICTORY_TEXTURE_STORE=1` | Converted textures kept between runs (about 8 ms a frame for now: off) |
+| `VICTORY_TEARING=1` | Presents are not held to the display's rate: a G-SYNC or FreeSync display follows the frames, and `VICTORY_FRAME_INTERVAL_MS=0` is really without a limit (off by default; can tear on other displays) |
 
 What is known to be wrong:
 
@@ -85,6 +86,28 @@ scripts\play.ps1 -Exe <path of your copy's executable>
 
 `scripts\play.ps1 -Safe` leaves out the newest, faster ways; try it first when
 something is wrong. `-RayTracing` turns the title's ray-traced indirect light on.
+
+### Frame rate
+
+The launcher leaves the renderer patches and the frame rate as they are unless
+asked. For the most frames, with what the table above measured:
+
+```powershell
+scripts\play.ps1 -Exe <path> -Fast -Warm            # patches 1, 2, 5, 6, 7 and the Series S profile
+scripts\play.ps1 -Exe <path> -Fast -Fps 60 -Tearing # and above 30 where the PC can, on a VRR display
+scripts\play.ps1 -Exe <path> -Fast -Fps 20          # even frames: a limit just below what the PC reaches
+```
+
+- `-Ports` turns on the five renderer patches, `-SeriesS` the Series S profile,
+  `-Fast` both (with `-Fsr4K`, the patches only: FSR 4K needs the Series X profile).
+- `-Fps <rate>` sets `VICTORY_FRAME_INTERVAL_MS` for it (`0`: no limit). A limit a
+  little below the frame rate the scene reaches gives frames of one length
+  instead of frames that vary; above 30 the title goes as fast as it can.
+- `-Tearing` sets `VICTORY_TEARING=1`.
+- `-Warm` writes down the pipelines each run creates and, before starting, makes
+  those earlier runs drew with (`victory warm --used`), so a new build or driver
+  stutters less. It goes on where it was stopped.
+- `VICTORY_TIMER_LOG=1` logs how even the frames are every 5 s.
 
 For PC FSR 4.1.2, set `[paths].fidelityfx_dir` in `victory.toml` or
 `VICTORY_FIDELITYFX_DIR` to the folder containing AMD's signed
