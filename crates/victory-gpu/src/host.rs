@@ -9195,8 +9195,77 @@ fn swap_format(format: DXGI_FORMAT) -> Option<DXGI_FORMAT> {
 
 const BUFFERS: u32 = 2;
 
+/// Presents that may tear (`VICTORY_TEARING=1`, off by default): the swap
+/// chain is made with `DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING` and every present
+/// passes `DXGI_PRESENT_ALLOW_TEARING`, if the system supports it (said
+/// once either way). In a window, a present without it waits for the
+/// compositor: frames faster than the display's rate are held back to it,
+/// and a G-SYNC, FreeSync or other variable refresh display keeps its fixed
+/// rate instead of following the frames. With it, the frame rate is the
+/// title's own (`VICTORY_FRAME_INTERVAL_MS=0` for no limit at all) and a
+/// variable refresh display shows each frame as it comes; on a display
+/// without variable refresh it can tear.
+fn tearing_asked() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| tearing_switch(std::env::var("VICTORY_TEARING").ok().as_deref()))
+}
+
+/// `1` turns it on; unset, `0` or anything else leaves it off.
+fn tearing_switch(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v.trim() == "1")
+}
+
+/// Whether the system can show presents that tear (Windows 10 1607 and
+/// later with a driver that allows it).
+fn tearing_supported(factory: &IDXGIFactory2) -> bool {
+    let Ok(factory) = factory.cast::<IDXGIFactory5>() else {
+        return false;
+    };
+    let mut allowed = windows::core::BOOL(0);
+    // SAFETY: `allowed` is a BOOL, the size the feature asks for.
+    let checked = unsafe {
+        factory.CheckFeatureSupport(
+            DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+            (&mut allowed as *mut windows::core::BOOL).cast(),
+            std::mem::size_of::<windows::core::BOOL>() as u32,
+        )
+    };
+    checked.is_ok() && allowed.as_bool()
+}
+
+/// The swap chain's flags and each present's, for presents that tear or not.
+fn present_flags(tearing: bool) -> (DXGI_SWAP_CHAIN_FLAG, DXGI_PRESENT) {
+    if tearing {
+        (DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, DXGI_PRESENT_ALLOW_TEARING)
+    } else {
+        (DXGI_SWAP_CHAIN_FLAG(0), DXGI_PRESENT(0))
+    }
+}
+
+#[cfg(test)]
+mod tearing_tests {
+    use super::*;
+
+    #[test]
+    fn tearing_is_asked_for_only_with_one() {
+        assert!(tearing_switch(Some("1")));
+        assert!(tearing_switch(Some(" 1 ")));
+        assert!(!tearing_switch(None));
+        assert!(!tearing_switch(Some("0")));
+        assert!(!tearing_switch(Some("yes")));
+    }
+
+    #[test]
+    fn the_swap_chain_and_its_presents_agree() {
+        assert_eq!(present_flags(true), (DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, DXGI_PRESENT_ALLOW_TEARING));
+        assert_eq!(present_flags(false), (DXGI_SWAP_CHAIN_FLAG(0), DXGI_PRESENT(0)));
+    }
+}
+
 struct Presenter {
     swap_chain: IDXGISwapChain3,
+    /// Presents may tear ([`tearing_asked`], and the system allows it).
+    tearing: bool,
     width: u32,
     height: u32,
     format: DXGI_FORMAT,
@@ -9692,7 +9761,7 @@ impl Host {
             // SAFETY: no back buffer is held; every submission was waited for.
             let resized = unsafe {
                 p.swap_chain
-                    .ResizeBuffers(BUFFERS, width, height, format, DXGI_SWAP_CHAIN_FLAG(0))
+                    .ResizeBuffers(BUFFERS, width, height, format, present_flags(p.tearing).0)
             };
             match resized {
                 Ok(()) => {
@@ -9907,7 +9976,7 @@ impl Host {
             #[cfg(feature = "diagnostics")]
             crate::replay::record::present(texture, state);
             let mut showing = crate::timeline::span("the host's Present");
-            let status = p.swap_chain.Present(0, DXGI_PRESENT(0));
+            let status = p.swap_chain.Present(0, present_flags(p.tearing).1);
             showing.next("the frame meter");
             if status == windows::Win32::Foundation::S_OK {
                 p.panel.frame(p.meter.line_due());
@@ -9936,6 +10005,14 @@ impl Host {
         // SAFETY: plain object creation for our window.
         unsafe {
             let factory: IDXGIFactory2 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))?;
+            let tearing = tearing_asked() && tearing_supported(&factory);
+            if tearing_asked() {
+                if tearing {
+                    tracing::info!("presents may tear (VICTORY_TEARING=1): the frame rate is not held to the display's");
+                } else {
+                    tracing::warn!("VICTORY_TEARING=1, but this system does not allow presents that tear; presenting as before");
+                }
+            }
             let desc = DXGI_SWAP_CHAIN_DESC1 {
                 Width: width,
                 Height: height,
@@ -9947,17 +10024,24 @@ impl Host {
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BUFFERS,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                Flags: present_flags(tearing).0.0 as u32,
                 ..Default::default()
             };
             let swap_chain = factory
                 .CreateSwapChainForHwnd(&self.queue, hwnd, &desc, None, None)?
                 .cast::<IDXGISwapChain3>()?;
+            if tearing {
+                // Presents that tear are refused in exclusive full screen,
+                // which Alt+Enter would otherwise switch to.
+                let _ = factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+            }
             let copy = self.new_list()?;
             copy.close();
             tracing::info!(width, height, format = format.0, "presenting to a window");
             self.log_video_memory("right after the swap chain is made");
             Ok(Presenter {
                 swap_chain,
+                tearing,
                 width,
                 height,
                 format,
